@@ -1,24 +1,41 @@
 import { BuildContext } from './util/interfaces';
 import { generateContext, getConfigValueDefault, hasConfigValue } from './util/config';
 import { Logger } from './util/logger';
-import { join } from 'path';
-import { readFile } from 'fs';
 import { watch } from './watch';
+import * as path from 'path';
 import * as chalk from 'chalk';
 import * as devLogger from './dev-server/injector';
-import * as http from 'http';
 import * as liveReload from './dev-server/live-reload';
 import * as devServer from './dev-server/dev-server';
 import * as mime from 'mime-types';
+import * as fs from 'fs';
+import { promisify } from '../util/promisify';
+import { HttpServerConfig, HttpServer, serveStatic, Request, Response } from './dev-server/http-server';
+import * as open from 'open';
 
-
-let httpServer: http.Server;
-let isListening: boolean = false;
+const DEV_SERVER_DEFAULT_PORT = 8100;
+export const IONIC_LAB_URL = '/__ion-dev-server/ionic_lab.html';
+export const LOGGER_DIR = '__ion-dev-server';
 
 export function serve(context?: BuildContext) {
   context = generateContext(context);
 
-  createDevServer(context);
+  const server = createDevServer({
+    port: getHttpServerPort(),
+    host: getHttpServerHost(),
+    rootDir: context.wwwDir
+  });
+
+  Logger.info(chalk.green(`dev server running: http://${server.config.host}:${server.config.port}/`));
+
+  if (launchBrowser() || launchLab()) {
+    const openOptions: string[] = [`http://${server.config.host}:${server.config.port}/`]
+      .concat(launchLab() ? [IONIC_LAB_URL] : [])
+      .concat(browserOption() ? [browserOption()] : [])
+      .concat(platformOption() ? ['?ionicplatform=', platformOption()] : []);
+
+    open(openOptions.join(''), browserToLaunch());
+  }
 
   return watch(context)
     .then(() => {
@@ -28,129 +45,71 @@ export function serve(context?: BuildContext) {
     });
 }
 
-
-export function createDevServer(context: BuildContext) {
-  const port = getHttpServerPort();
-  const host = getHttpServerHost();
-
-  function httpServerListen() {
-    httpServer.listen(port, host, undefined, () => {
-      isListening = true;
-    });
-  }
-
-  if (liveReload.useLiveReload()) {
-    liveReload.createLiveReloadServer(context, host);
-  }
-
-  if (devLogger.useDevLogger()) {
-    devServer.createDevServer();
-  }
-
-  if (httpServer) {
-    isListening = false;
-    httpServer.close();
-  }
-
-  httpServer = http.createServer((request, response) => {
-    httpServerListener(context, request, response);
+/**
+ * Create HTTP server
+ */
+export function createDevServer(config: HttpServerConfig) {
+  const server = new HttpServer({
+    port: config.port,
+    host: config.host,
+    rootDir: config.rootDir
   });
 
-  httpServer.on('error', (err: any) => {
-    if (err.code === 'EADDRINUSE') {
-      Logger.error(`server already in use, retrying....`);
+  server.addRoute('GET', '/', serveIndex);
+  server.addRoute('GET', '/cordova.js', serveCordovaJS);
+  server.addRoute('GET', `/${LOGGER_DIR}/:file`, serveAppScriptAsset);
+  server.addRoute('GET', '*', serveStatic);
 
-      setTimeout(() => {
-        isListening = false;
-        httpServer.close();
-        httpServerListen();
-      }, 1500);
-    }
-  });
-
-  httpServerListen();
+  return server;
 }
 
+/**
+ * http responder for /index.html base entrypoint
+ */
+function serveIndex(req: Request, res: Response) {
+  const readFilePromise = promisify<Buffer, string>(fs.readFile);
 
-function serverReady() {
-  if (isListening) {
-    const port = getHttpServerPort();
-    const address = getHttpServerHost() || 'localhost';
-    Logger.info(chalk.green(`dev server running: http://${address}:${port}/`));
-  }
-}
-
-
-function httpServerListener(context: BuildContext, request: http.IncomingMessage, response: http.ServerResponse) {
-  if (devLogger.isDevLoggerUrl(request, response)) {
-    return;
-  }
-
-  let filePath = '.' + request.url.split('?')[0];
-  if (filePath === './') {
-    filePath = './index.html';
-  }
-  filePath = join(context.wwwDir, filePath);
-
-  readFile(filePath, (err, content) => {
-    if (err) {
-      // gahh!
-      responseError(err, filePath, request, response);
-
-    } else {
-      // 200!! found the file, let's send back dat data
-      responseSuccess(context, filePath, content, response);
-    }
-  });
-}
-
-
-function responseSuccess(context: BuildContext, filePath: string, content: Buffer, response: http.ServerResponse) {
-  const headers = {
-    'Content-Type': mime.lookup(filePath) || 'application/octet-stream',
-    'X-DEV-FILE-PATH': filePath
-  };
-  response.writeHead(200, headers);
-
-  if (isRootIndexFile(context, filePath)) {
+  return readFilePromise(req.filePath).then((content: Buffer) => {
     if (liveReload.useLiveReload()) {
       content = liveReload.injectLiveReloadScript(content);
     }
-
     if (devLogger.useDevLogger()) {
       content = devLogger.injectDevLoggerScript(content);
     }
-  }
 
-  response.end(content, mime.charset(headers['Content-Type']));
+    // File found so lets send it back to the response
+    res.writeHead(200, {
+      'Content-Type': mime.lookup(req.filePath),
+      'X-DEV-FILE-PATH': req.filePath
+    });
+    res.end(content);
+  });
 }
 
+/**
+ * http responder for static assets in app-scripts
+ */
+function serveAppScriptAsset(req: Request, res: Response) {
+  const fileName = req.params.file;
+  const filePath = path.join(__dirname, '..', '..', 'bin', fileName);
+  const readFilePromise = promisify<Buffer, string>(fs.readFile);
 
-function responseError(err: NodeJS.ErrnoException, filePath: string, request: http.IncomingMessage, response: http.ServerResponse) {
-  if (err.code === 'ENOENT') {
-    // dev file not found!
-    response404(filePath, request, response);
-
-  } else {
-    // derp, 500?!!
-    Logger.error(`http server error: ${err}`);
-    response.writeHead(500, { 'Content-Type': 'text/html' });
-    response.end(`Sorry, check with the site admin for error: ${err.code} ..\n`);
-  }
+  readFilePromise(req.filePath).then((content: Buffer) => {
+    res.writeHead(200, {
+      'Content-Type': mime.lookup(filePath) || 'application/octet-stream'
+    });
+    res.end(content);
+  });
 }
 
-
-function response404(filePath: string, request: http.IncomingMessage, response: http.ServerResponse) {
-  if (filePath.indexOf('/cordova.js') > -1) {
-    // mock the cordova.js file during dev
-    response.writeHead(200, { 'Content-Type': 'application/javascript' });
-    response.end('// mock cordova file during development');
-    return;
-  }
-
-  // 404!!!
-  response.writeHead(404, { 'Content-Type': 'text/html' });
-  response.end(`File not found: ${request.url}<br>Local file: ${filePath}`);
+/**
+ * http responder for cordova.js fiel
+ */
+function serveCordovaJS(req: Request, res: Response) {
+  res.writeHead(200, {
+    'Content-Type': 'application/javascript'
+  });
+  res.end('// mock cordova file during development');
 }
 
 
@@ -167,11 +126,6 @@ function getHttpServerHost() {
   if (host) {
     return host;
   }
-}
-
-
-function isRootIndexFile(context: BuildContext, filePath: string) {
-  return (filePath === context.wwwIndex);
 }
 
 function useServerLogs() {
@@ -194,6 +148,6 @@ function launchLab() {
   return hasConfigValue('--lab', '-l', 'ionic_lab', false);
 }
 
-
-const DEV_SERVER_DEFAULT_PORT = 8100;
-
+function platformOption() {
+  return getConfigValueDefault('--platform', '-t', 'ionic_platform_browser', null);
+}
