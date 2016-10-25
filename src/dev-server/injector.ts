@@ -1,5 +1,5 @@
 import { sendClientConsoleLogs, getWsPort } from './dev-server';
-import LOGGER_DIR from '../serve';
+import { LOGGER_DIR } from '../serve';
 
 
 function getConsoleLoggerScript() {
