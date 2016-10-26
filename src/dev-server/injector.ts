@@ -27,7 +27,8 @@ export function injectNotificationScript(content: any, notifyOnConsoleLog: boole
 function getConsoleLoggerScript(notifyOnConsoleLog: boolean, notificationPort: Number) {
   const ionDevServer = JSON.stringify({
     sendConsoleLogs: notifyOnConsoleLog,
-    wsPort: notificationPort
+    wsPort: notificationPort,
+    notificationIconPath: `${LOGGER_DIR}/ionic.png`
   });
 
   return `

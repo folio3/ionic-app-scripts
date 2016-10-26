@@ -12,13 +12,12 @@ export function createLiveReloadServer(config: ServeConfig) {
 
   function broadcastChange(filePath: string | string[]) {
     const files = Array.isArray(filePath) ? filePath : [filePath];
-    console.log(files);
-
-    liveReloadServer.changed({
+    const msg = {
       body: {
         files: files.map(f => '/' + relative(config.rootDir, f))
       }
-    });
+    };
+    liveReloadServer.changed(msg);
   }
 
   return liveReloadServer;
