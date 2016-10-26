@@ -1,158 +1,82 @@
-import * as http from 'http';
-import { Logger } from '../util/logger';
-import * as fs from 'fs';
 import * as path from 'path';
+import { injectNotificationScript } from './injector';
+import { injectLiveReloadScript } from './live-reload';
+import * as express from 'express';
+import * as fs from 'fs';
 import * as url from 'url';
-import * as pathToRegexp from 'path-to-regexp';
-import * as mime from 'mime-types';
+import { ServeConfig, LOGGER_DIR } from './serve-config';
+import { Logger } from '../util/logger';
 import { promisify } from '../util/promisify';
+import * as proxyMiddleware from 'proxy-middleware';
+import { getProjectJson, IonicProject } from '../util/ionic-project';
 
-export interface HttpServerConfig {
-  port: number;
-  host: string;
-  rootDir: string;
-  useLiveReload?: boolean;
-  useDevLogger?: boolean;
-}
+const readFilePromise = promisify<Buffer, string>(fs.readFile);
 
-export const RequestMethod = {
-  GET: 'GET',
-  HEAD: 'HEAD',
-  POST: 'POST',
-  PUT: 'PUT',
-  DELETE: 'DELETE',
-  OPTIONS: 'OPTIONS'
-}
+/**
+ * Create HTTP server
+ */
+export function createHttpServer(config: ServeConfig): express.Application {
 
-export interface ResponseHandler {
-  method: string;
-  pathRegex: pathToRegexp.Path;
-  callback: Function;
-}
+  const app = express();
+  app.set('serveConfig', config);
+  app.listen(config.httpPort, config.host, function() {
+    Logger.info(`listening on ${config.httpPort}`);
+  });
 
-export interface Request extends http.IncomingMessage {
-  relativefilePath: string;
-  filePath: string;
-  useLiveReload: boolean;
-  useDevLogger: boolean;
-  params: string[];
-  queryString: string;
-}
-export { ServerResponse as Response } from 'http';
+  app.get('/', serveIndex);
+  app.use('/', express.static(config.rootDir));
+  app.use(`/${LOGGER_DIR}`, express.static(path.join(__dirname, '..', '..', 'bin')));
+  app.get('/cordova.js', serveCordovaJS);
 
-export class HttpServer {
-  httpServer: http.Server;
-  staticServer: Function;
-  rootDir: string;
-  responseFunctionList: ResponseHandler[] = [];
-
-  constructor(public config: HttpServerConfig = {
-    port: 8080,
-    host: 'localhost',
-    useLiveReload: true,
-    useDevLogger: true,
-    rootDir: null
-  }) {
-    this.httpServer = http.createServer((request: http.IncomingMessage, response: http.ServerResponse) =>
-      this.handleRequest(request, response));
-    this.httpServer.listen(config.port, config.host, undefined);
+  if (config.useProxy) {
+    setupProxies(app);
   }
 
-  updateListener() {
-    setTimeout(() => {
-      this.httpServer.close();
-      this.httpServer.listen(this.config.port, this.config.host, undefined);
-    }, 1500);
-  }
+  return app;
+}
 
-  handleRequest(request: http.IncomingMessage, response: http.ServerResponse) {
-    let req = <Request>Object.assign({}, request);
-    let routeMatch: Function;
+function setupProxies(app: express.Application) {
 
-    for (let reqResolver of this.responseFunctionList) {
-      let urlParts = url.parse(req.url);
-      let segments = resolvePathRegex(reqResolver, req.method, urlParts.pathname);
-      if (segments) {
-        req.relativefilePath = urlParts.pathname;
-        req.queryString = urlParts.query;
-        req.filePath = path.join(this.config.rootDir, req.relativefilePath);
-        routeMatch = reqResolver.callback;
-        req.params = segments.slice(1) || [];
-        break;
+  getProjectJson().then(function(projectConfig: IonicProject) {
+    for (const proxy of projectConfig.proxies || []) {
+      var opts: any = url.parse(proxy.proxyUrl);
+      if (proxy.proxyNoAgent) {
+        opts.agent = false;
       }
+
+      opts.rejectUnauthorized = !(proxy.rejectUnauthorized === false);
+
+      app.use(proxy.path, proxyMiddleware(opts));
+      Logger.info('Proxy added:', proxy.path + ' => ' + url.format(opts));
     }
-
-    routeMatch(req, response).catch((err: any) => serveError(req, response, err));
-  }
-
-  addRoute(method: string, pathRegex: pathToRegexp.Path, callback: Function) {
-    this.responseFunctionList.push({
-      method,
-      pathRegex,
-      callback
-    });
-  }
-}
-
-function resolvePathRegex(resHandler: ResponseHandler, method: string, path: string) {
-  const regex = pathToRegexp(resHandler.pathRegex, {});
-
-  if (method === resHandler.method && regex.test(path)) {
-    return regex.exec(path);
-  }
-  return null;
-}
-
-export function serveStatic(req: Request, res: http.ServerResponse): Promise<void> {
-  const statFilePromise = promisify<fs.Stats, string>(fs.stat);
-
-  return statFilePromise(req.filePath).then((fileStats): Promise<void> => {
-    if (fileStats.isFile()) {
-      return serveFile(req, res);
-    } else if (fileStats.isDirectory()) {
-      return serveDirectory(req, res);
-    }
-    throw new Error('unkown error occurred');
   });
 }
 
-function serveFile(req: Request, res: http.ServerResponse): Promise<void> {
-  const readFilePromise = promisify<Buffer, string>(fs.readFile);
+/**
+ * http responder for /index.html base entrypoint
+ */
+function serveIndex(req: express.Request, res: express.Response)  {
+  const config = req.app.get('serveConfig');
+  let htmlFile = path.join(req.app.get('serveConfig').rootDir, 'index.html');
 
-  return readFilePromise(req.filePath).then((content) => {
+  readFilePromise(htmlFile).then((content: Buffer) => {
+    if (config.useLiveReload) {
+      content = injectLiveReloadScript(content, config.host, config.port);
+    }
+    if (config.useNotifier) {
+      content = injectNotificationScript(content, config.notifyOnConsoleLog, config.notificationPort);
+    }
 
     // File found so lets send it back to the response
-    res.writeHead(200, {
-      'Content-Type': mime.lookup(req.filePath) || 'application/octet-stream',
-      'X-DEV-FILE-PATH': req.filePath
-    });
-    res.end(content);
+    res.set('Content-Type', 'text/html');
+    res.send(content);
   });
 }
 
-function serveDirectory(req: Request, res: http.ServerResponse): Promise<void> {
-  const statFilePromise = promisify<fs.Stats, string>(fs.stat);
-  const htmlFile = path.join(req.filePath, 'index.html');
-
-  return statFilePromise(htmlFile).then(() => {
-    return serveFile(req, res);
-  });
-}
-
-function serveError(req: Request, res: http.ServerResponse, err: any) {
-  Logger.error(`http server error: ${err}`);
-
-  // File was not found so lets fail with a 404.
-  if (err.code === 'ENOENT') {
-    res.writeHead(404, {
-      'Content-Type': 'text/html'
-    });
-    return res.end(`File not found: ${req.url}<br>Local file: ${req.filePath}`);
-  }
-
-  // Some other error occurred so throw a 500 back.
-  res.writeHead(500, {
-    'Content-Type': 'text/html'
-  });
-  res.end(`Sorry, check with the site admin for error: ${err.code} ..\n`);
+/**
+ * http responder for cordova.js fiel
+ */
+function serveCordovaJS(req: express.Request, res: express.Response) {
+  res.set('Content-Type', 'application/javascript');
+  res.send('// mock cordova file during development');
 }

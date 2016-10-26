@@ -1,23 +1,10 @@
-import { sendClientConsoleLogs, getWsPort } from './dev-server';
-import { LOGGER_DIR } from '../serve';
+import { LOGGER_DIR } from './serve-config';
 
+const LOGGER_HEADER = '<!-- Ionic Dev Server: Injected Logger Script -->';
 
-function getConsoleLoggerScript() {
-  const ionDevServer = JSON.stringify({
-    sendConsoleLogs: sendClientConsoleLogs(),
-    wsPort: getWsPort()
-  });
-
-  return `
-  ${LOGGER_HEADER}
-  <script>var IonicDevServerConfig=${ionDevServer};</script>
-  <link href="${LOGGER_DIR}/ion-dev.css" rel="stylesheet">
-  <script src="${LOGGER_DIR}/ion-dev.js"></script>
-  `;
-}
-
-export function injectDevLoggerScript(content: any): any {
+export function injectNotificationScript(content: any, notifyOnConsoleLog: boolean, notificationPort: Number): any {
   let contentStr = content.toString();
+  const consoleLogScript = getConsoleLoggerScript(notifyOnConsoleLog, notificationPort);
 
   if (contentStr.indexOf(LOGGER_HEADER) > -1) {
     // already added script somehow
@@ -29,17 +16,24 @@ export function injectDevLoggerScript(content: any): any {
     match = contentStr.match(/<body>(?![\s\S]*<body>)/i);
   }
   if (match) {
-    contentStr = contentStr.replace(match[0], `${match[0]}\n${getConsoleLoggerScript()}`);
+    contentStr = contentStr.replace(match[0], `${match[0]}\n${consoleLogScript}`);
   } else {
-    contentStr = getConsoleLoggerScript() + contentStr;
+    contentStr = consoleLogScript + contentStr;
   }
 
   return contentStr;
 }
 
-export function useDevLogger() {
-  return true;
+function getConsoleLoggerScript(notifyOnConsoleLog: boolean, notificationPort: Number) {
+  const ionDevServer = JSON.stringify({
+    sendConsoleLogs: notifyOnConsoleLog,
+    wsPort: notificationPort
+  });
+
+  return `
+  ${LOGGER_HEADER}
+  <script>var IonicDevServerConfig=${ionDevServer};</script>
+  <link href="${LOGGER_DIR}/ion-dev.css" rel="stylesheet">
+  <script src="${LOGGER_DIR}/ion-dev.js"></script>
+  `;
 }
-
-
-const LOGGER_HEADER = '<!-- Ionic Dev Server: Injected Logger Script -->';
