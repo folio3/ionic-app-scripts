@@ -56,12 +56,12 @@ function setupProxies(app: express.Application) {
  * http responder for /index.html base entrypoint
  */
 function serveIndex(req: express.Request, res: express.Response)  {
-  const config = req.app.get('serveConfig');
+  const config: ServeConfig = req.app.get('serveConfig');
   let htmlFile = path.join(req.app.get('serveConfig').rootDir, 'index.html');
 
   readFilePromise(htmlFile).then((content: Buffer) => {
     if (config.useLiveReload) {
-      content = injectLiveReloadScript(content, config.host, config.port);
+      content = injectLiveReloadScript(content, config.host, config.liveReloadPort);
     }
     if (config.useNotifier) {
       content = injectNotificationScript(content, config.notifyOnConsoleLog, config.notificationPort);

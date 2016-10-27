@@ -1,4 +1,4 @@
-import { relative } from 'path';
+import * as path from 'path';
 import * as tinylr from 'tiny-lr';
 import { ServeConfig } from './serve-config';
 import * as events from '../util/events';
@@ -14,7 +14,7 @@ export function createLiveReloadServer(config: ServeConfig) {
     const files = Array.isArray(filePath) ? filePath : [filePath];
     const msg = {
       body: {
-        files: files.map(f => '/' + relative(config.rootDir, f))
+        files: files.map(f => '/' + path.relative(config.rootDir, f))
       }
     };
     liveReloadServer.changed(msg);
