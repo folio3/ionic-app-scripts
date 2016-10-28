@@ -103,25 +103,35 @@ export function bundlerStrategy() {
     return BUNDLER_ROLLUP;
   }
 
-  // 2) User provided a rollup config env var
+  // 2) User provided both a rollup config env var and a webpack config env var
+  rollupVal = getEnvVariable('ionic_rollup');
+  const webpackVal = getEnvVariable('ionic_webpack');
+  if (rollupVal && webpackVal) {
+    let bundler = getEnvVariable('ionic_bundler');
+    if (isValidBundler(bundler)) {
+      return bundler;
+    }
+  }
+
+  // 3) User provided a rollup config env var
   rollupVal = getEnvVariable('ionic_rollup');
   if (rollupVal) {
     return BUNDLER_ROLLUP;
   }
 
-  // 3) User set bundler through full arg
+  // 4) User set bundler through full arg
   let bundler = getArgValue('--bundler', null);
   if (isValidBundler(bundler)) {
     return bundler;
   }
 
-  // 4) User set to use rollup at the bundler
+  // 5) User set to use rollup at the bundler
   bundler = getEnvVariable('ionic_bundler');
   if (isValidBundler(bundler)) {
     return bundler;
   }
 
-  // 5) Default to use webpack
+  // 6) Default to use webpack
   return BUNDLER_WEBPACK;
 }
 
