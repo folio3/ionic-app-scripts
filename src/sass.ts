@@ -57,45 +57,64 @@ export function sassWorker(context: BuildContext, configFile: string) {
         return;
       }
     }
-
-    const sassConfig: SassConfig = fillConfigDefaults(configFile, taskInfo.defaultConfigFile);
-
-    // where the final css output file is saved
-    if (!sassConfig.outFile) {
-      sassConfig.outFile = join(context.buildDir, sassConfig.outputFilename);
-    }
-    Logger.debug(`sass outFile: ${sassConfig.outFile}`);
-
-    // import paths where the sass compiler will look for imports
-    sassConfig.includePaths.unshift(join(context.srcDir));
-    Logger.debug(`sass includePaths: ${sassConfig.includePaths}`);
-
-    // sass import sorting algorithms incase there was something to tweak
-    sassConfig.sortComponentPathsFn = (sassConfig.sortComponentPathsFn || defaultSortComponentPathsFn);
-    sassConfig.sortComponentFilesFn = (sassConfig.sortComponentFilesFn || defaultSortComponentFilesFn);
-
-    if (!sassConfig.file) {
-      // if the sass config was not given an input file, then
-      // we're going to dynamically generate the sass data by
-      // scanning through all the components included in the bundle
-      // and generate the sass on the fly
-      generateSassData(context, sassConfig);
-    }
-
-    return render(context, sassConfig)
-      .then(() => {
-        resolve(true);
-      }, (reason: any) => {
-        reject(reason);
-      })
-      .catch(err => {
-        reject(new BuildError(err));
-      });
+    sassWorker1(context, configFile , resolve, reject, 0)
   });
 }
 
 
-function generateSassData(context: BuildContext, sassConfig: SassConfig) {
+function sassWorker1(context: BuildContext, configFile: string, resolve: Function, reject: Function, i:number) {
+
+  const sassConfig: SassConfig = fillConfigDefaults(configFile, taskInfo.defaultConfigFile);
+
+  // where the final css output file is saved
+  if (!sassConfig.outFile) {
+    sassConfig.outFile = join(context.buildDir, sassConfig.variableSassFiles[i].split("/").pop().split(".")[0]+"_"+sassConfig.outputFilename);
+  }
+  Logger.debug(`sass outFile: ${sassConfig.outFile}`);
+
+  // import paths where the sass compiler will look for imports
+  sassConfig.includePaths.unshift(join(context.srcDir));
+  Logger.debug(`sass includePaths: ${sassConfig.includePaths}`);
+
+  // sass import sorting algorithms incase there was something to tweak
+  sassConfig.sortComponentPathsFn = (sassConfig.sortComponentPathsFn || defaultSortComponentPathsFn);
+  sassConfig.sortComponentFilesFn = (sassConfig.sortComponentFilesFn || defaultSortComponentFilesFn);
+
+  if (!sassConfig.file) {
+    // if the sass config was not given an input file, then
+    // we're going to dynamically generate the sass data by
+    // scanning through all the components included in the bundle
+    // and generate the sass on the fly
+    generateSassData(context, sassConfig, sassConfig.variableSassFiles[i]);
+  }
+
+  if (i < sassConfig.variableSassFiles.length - 1) {
+
+    render(context, sassConfig)
+        .then(() => {
+          sassWorker1(context, configFile, resolve, reject, ++i)
+        }, (reason: any) => {
+          reject(reason);
+        })
+        .catch(err => {
+          reject(new BuildError(err));
+        });
+
+  } else {
+
+    return render(context, sassConfig)
+        .then(() => {
+          resolve(true);
+        }, (reason: any) => {
+          reject(reason);
+        })
+        .catch(err => {
+          reject(new BuildError(err));
+        });
+  }
+}
+
+function generateSassData(context: BuildContext, sassConfig: SassConfig, variableFile: string) {
   /**
    * 1) Import user sass variables first since user variables
    *    should have precedence over default library variables.
@@ -120,7 +139,7 @@ function generateSassData(context: BuildContext, sassConfig: SassConfig) {
 
   // gather a list of all the sass variable files that should be used
   // these variable files will be the first imports
-  const userSassVariableFiles = sassConfig.variableSassFiles.map(f => {
+  const userSassVariableFiles = [variableFile].map(f => {
     return replacePathVars(context, f);
   });
 
